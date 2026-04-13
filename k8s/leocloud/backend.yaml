@@ -29,24 +29,29 @@ spec:
               value: /app/model/labels.json
             - name: ECOSORT_ALLOWED_ORIGINS
               value: https://if200166.cloud.htl-leonding.ac.at
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: http
-            initialDelaySeconds: 10
-            periodSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: http
-            initialDelaySeconds: 30
-            periodSeconds: 10
+          # Startup probe gates readiness/liveness until TF + model finish loading.
+          # TF cold-start on constrained CPU can take 3-5 min.
+          # 60 × 10s = 600s max before Kubernetes gives up.
           startupProbe:
             httpGet:
               path: /health
               port: http
-            failureThreshold: 30
+            failureThreshold: 60
             periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 0   # startup probe already handled the wait
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 15
+            failureThreshold: 4
           resources:
             requests:
               cpu: "500m"
