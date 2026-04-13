@@ -15,7 +15,10 @@ COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
 COPY backend /app/backend
-COPY model /app/model
+
+# Runtime model assets (fail build immediately if missing)
+COPY model/ecosort.onnx /app/model/ecosort.onnx
+COPY model/labels.json /app/model/labels.json
 
 ENV ECOSORT_MODEL_PATH=/app/model/ecosort.onnx \
     ECOSORT_LABELS_PATH=/app/model/labels.json

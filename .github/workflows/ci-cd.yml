@@ -34,6 +34,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify backend model artifacts
+        run: |
+          test -s model/ecosort.onnx
+          test -s model/labels.json
+          ls -lh model/ecosort.onnx model/labels.json
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
