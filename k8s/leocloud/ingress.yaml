@@ -3,6 +3,7 @@ kind: Ingress
 metadata:
   name: ecosort
 spec:
+  ingressClassName: nginx
   rules:
     - host: if200166.cloud.htl-leonding.ac.at
       http:
