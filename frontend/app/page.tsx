@@ -57,6 +57,7 @@ export default function HomePage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isVideoReady, setIsVideoReady] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [prediction, setPrediction] = useState<PredictionResponse | null>(null);
@@ -70,24 +71,34 @@ export default function HomePage() {
     setErrorMessage(null);
   }, []);
 
+  const revokePreviewUrl = useCallback((url: string | null) => {
+    if (url?.startsWith("blob:")) {
+      URL.revokeObjectURL(url);
+    }
+  }, []);
+
   const cleanupStream = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setIsVideoReady(false);
     setIsCameraOn(false);
   }, []);
 
   const setNewFile = useCallback(
-    (file: File) => {
+    (file: File, previewOverride?: string) => {
       clearResultState();
       setSelectedFile(file);
       setPreviewUrl((currentUrl) => {
-        if (currentUrl) URL.revokeObjectURL(currentUrl);
-        return URL.createObjectURL(file);
+        revokePreviewUrl(currentUrl);
+        return previewOverride ?? URL.createObjectURL(file);
       });
     },
-    [clearResultState]
+    [clearResultState, revokePreviewUrl]
   );
 
   const onFilePicked = useCallback(
@@ -104,6 +115,7 @@ export default function HomePage() {
 
   const startCamera = useCallback(async () => {
     clearResultState();
+    setIsVideoReady(false);
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" } },
@@ -145,6 +157,10 @@ export default function HomePage() {
       setErrorMessage("Camera not ready.");
       return;
     }
+    if (!isVideoReady) {
+      setErrorMessage("Camera is warming up. Try again in a moment.");
+      return;
+    }
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video.videoWidth || !video.videoHeight) {
@@ -159,6 +175,7 @@ export default function HomePage() {
       return;
     }
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     const blob = await new Promise<Blob | null>((resolve) => {
       canvas.toBlob(resolve, "image/jpeg", 0.92);
     });
@@ -170,9 +187,9 @@ export default function HomePage() {
       type: "image/jpeg",
       lastModified: Date.now(),
     });
-    setNewFile(file);
+    setNewFile(file, dataUrl);
     cleanupStream();
-  }, [cleanupStream, setNewFile]);
+  }, [cleanupStream, isVideoReady, setNewFile]);
 
   const analyzeImage = useCallback(async () => {
     if (!selectedFile) {
@@ -210,18 +227,18 @@ export default function HomePage() {
     setPrediction(null);
     setErrorMessage(null);
     setPreviewUrl((currentUrl) => {
-      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      revokePreviewUrl(currentUrl);
       return null;
     });
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [cleanupStream]);
+  }, [cleanupStream, revokePreviewUrl]);
 
   useEffect(() => {
     return () => {
       cleanupStream();
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      revokePreviewUrl(previewUrl);
     };
-  }, [cleanupStream, previewUrl]);
+  }, [cleanupStream, previewUrl, revokePreviewUrl]);
 
   const topPredictions = useMemo(() => prediction?.top_predictions ?? [], [prediction]);
 
@@ -267,7 +284,15 @@ export default function HomePage() {
 
           <div className={`camera-stage${isCameraOn ? " is-active" : ""}`}>
             {isCameraOn ? (
-              <video ref={videoRef} className="camera-feed" playsInline muted autoPlay />
+              <video
+                ref={videoRef}
+                className="camera-feed"
+                playsInline
+                muted
+                autoPlay
+                onLoadedMetadata={() => setIsVideoReady(true)}
+                onCanPlay={() => setIsVideoReady(true)}
+              />
             ) : previewUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={previewUrl} alt="Selected item" className="camera-feed" />
@@ -293,8 +318,13 @@ export default function HomePage() {
               </button>
             ) : (
               <>
-                <button type="button" className="btn btn-cam" onClick={takeSnapshot}>
-                  📷 Take Snapshot
+                <button
+                  type="button"
+                  className="btn btn-cam"
+                  onClick={takeSnapshot}
+                  disabled={!isVideoReady}
+                >
+                  {isVideoReady ? "📷 Take Snapshot" : "⏳ Camera Warming Up"}
                 </button>
                 <button type="button" className="btn btn-ghost" onClick={stopCamera}>
                   ✕ Stop Camera
