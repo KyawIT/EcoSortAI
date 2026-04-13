@@ -132,15 +132,79 @@ jobs:
 
       - name: Wait — backend rollout
         run: |
-          kubectl rollout status deployment/ecosort-backend \
-            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
-            --timeout=660s
+          echo "Waiting for ecosort-backend pods (max 10 min, fails fast on CrashLoopBackOff)..."
+          for i in $(seq 1 60); do
+            REASON=$(kubectl get pods -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+              -l app=ecosort-backend \
+              -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+
+            READY=$(kubectl get pods -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+              -l app=ecosort-backend \
+              -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || true)
+
+            echo "  [${i}/60] ready=${READY} waitReason=${REASON}"
+
+            if [ "$READY" = "true" ]; then
+              echo "Backend is ready."
+              exit 0
+            fi
+
+            if [ "$REASON" = "CrashLoopBackOff" ] || [ "$REASON" = "Error" ]; then
+              echo "Pod crashed (${REASON}) — dumping logs:"
+              kubectl logs -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+                -l app=ecosort-backend --tail=60 || true
+              kubectl logs -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+                -l app=ecosort-backend --previous --tail=60 || true
+              echo "--- describe ---"
+              kubectl describe pods -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+                -l app=ecosort-backend | tail -30 || true
+              exit 1
+            fi
+
+            if [ "$REASON" = "ErrImagePull" ] || [ "$REASON" = "ImagePullBackOff" ]; then
+              echo "Image pull failed — check GHCR visibility or image tag."
+              kubectl describe pods -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+                -l app=ecosort-backend | tail -20 || true
+              exit 1
+            fi
+
+            sleep 10
+          done
+          echo "Timed out after 10 min waiting for backend."
+          kubectl describe pods -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+            -l app=ecosort-backend | tail -30 || true
+          exit 1
 
       - name: Wait — frontend rollout
         run: |
-          kubectl rollout status deployment/ecosort-frontend \
-            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
-            --timeout=120s
+          echo "Waiting for ecosort-frontend pods (max 3 min)..."
+          for i in $(seq 1 18); do
+            REASON=$(kubectl get pods -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+              -l app=ecosort-frontend \
+              -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+
+            READY=$(kubectl get pods -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+              -l app=ecosort-frontend \
+              -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || true)
+
+            echo "  [${i}/18] ready=${READY} waitReason=${REASON}"
+
+            if [ "$READY" = "true" ]; then
+              echo "Frontend is ready."
+              exit 0
+            fi
+
+            if [ "$REASON" = "CrashLoopBackOff" ] || [ "$REASON" = "Error" ]; then
+              echo "Frontend pod crashed — dumping logs:"
+              kubectl logs -n ${{ secrets.LEOCLOUD_NAMESPACE }} \
+                -l app=ecosort-frontend --tail=40 || true
+              exit 1
+            fi
+
+            sleep 10
+          done
+          echo "Timed out after 3 min waiting for frontend."
+          exit 1
 
       # Smoke tests run inside the cluster — no ingress needed
       - name: Smoke test — backend /health
