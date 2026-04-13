@@ -67,3 +67,5 @@ ehthumbs.db
 *.suo
 *.user
 .vs/
+
+assets/
