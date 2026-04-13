@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
 
-# One deploy at a time — queues, doesn't cancel
+# One deploy at a time — queues, doesn't cancel in-flight
 concurrency:
   group: deploy-leocloud
   cancel-in-progress: false
@@ -28,15 +28,11 @@ jobs:
       packages: write
 
     outputs:
-      image_tag: ${{ steps.meta.outputs.tag }}
+      image_tag: ${{ github.sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set image tag
-        id: meta
-        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,6 +45,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Backend ────────────────────────────────────────────────
+      # Layer cache: GHA cache (fast, free) + registry fallback
       - name: Build & push backend
         uses: docker/build-push-action@v6
         with:
@@ -58,10 +55,13 @@ jobs:
           tags: |
             ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
             ${{ env.BACKEND_IMAGE }}:latest
-          cache-from: type=registry,ref=${{ env.BACKEND_IMAGE }}:latest
-          cache-to: type=inline
+          cache-from: |
+            type=gha,scope=backend
+            type=registry,ref=${{ env.BACKEND_IMAGE }}:latest
+          cache-to: type=gha,scope=backend,mode=max
 
       # ── Frontend ───────────────────────────────────────────────
+      # Pass build arg so Next.js bakes the app name at build time
       - name: Build & push frontend
         uses: docker/build-push-action@v6
         with:
@@ -71,11 +71,15 @@ jobs:
           tags: |
             ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
             ${{ env.FRONTEND_IMAGE }}:latest
-          cache-from: type=registry,ref=${{ env.FRONTEND_IMAGE }}:latest
-          cache-to: type=inline
+          build-args: |
+            NEXT_PUBLIC_APP_NAME=EcoSort AI
+          cache-from: |
+            type=gha,scope=frontend
+            type=registry,ref=${{ env.FRONTEND_IMAGE }}:latest
+          cache-to: type=gha,scope=frontend,mode=max
 
   # ────────────────────────────────────────────────────────────────
-  # JOB 2 — Deploy to LeoCloud (main branch only)
+  # JOB 2 — Deploy to LeoCloud (main only)
   # ────────────────────────────────────────────────────────────────
   deploy:
     name: Deploy to LeoCloud
@@ -91,27 +95,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install kubectl & kustomize
+      - name: Install kubectl
         uses: azure/setup-kubectl@v4
 
       - name: Install kustomize
         run: |
-          curl -sSfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz \
+          curl -sSfL \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz \
             | tar -xz -C /usr/local/bin
           kustomize version
 
+      # Decode kubeconfig — secret must NOT have trailing %
       - name: Configure kubeconfig
         run: |
           mkdir -p ~/.kube
-          echo "${{ secrets.LEOCLOUD_KUBECONFIG_B64 }}" | base64 --decode > ~/.kube/config
+          printf '%s' "${{ secrets.LEOCLOUD_KUBECONFIG_B64 }}" | base64 --decode > ~/.kube/config
           chmod 600 ~/.kube/config
+          kubectl config current-context
 
       - name: Set namespace
         run: |
           kubectl config set-context --current \
             --namespace=${{ secrets.LEOCLOUD_NAMESPACE }}
 
-      - name: Inject image tags into manifests
+      # Patches kustomization.yaml in the runner workspace (not committed)
+      - name: Inject SHA image tags
         working-directory: k8s/leocloud
         run: |
           kustomize edit set image \
@@ -134,7 +142,7 @@ jobs:
             --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
             --timeout=120s
 
-      # ── Smoke tests ────────────────────────────────────────────
+      # Smoke tests run inside the cluster — no ingress needed
       - name: Smoke test — backend /health
         run: |
           kubectl run smoke-backend \
@@ -143,8 +151,7 @@ jobs:
             --rm \
             --attach \
             --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
-            -- \
-            curl -sf http://ecosort-backend:8000/health
+            -- curl -sf --max-time 10 http://ecosort-backend:8000/health
 
       - name: Smoke test — frontend
         run: |
@@ -154,14 +161,13 @@ jobs:
             --rm \
             --attach \
             --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
-            -- \
-            curl -sf http://ecosort-frontend:3000/
+            -- curl -sf --max-time 10 http://ecosort-frontend:3000/
 
-      # ── Rollback on failure ────────────────────────────────────
+      # Runs only if any previous step failed
       - name: Rollback on failure
         if: failure()
         run: |
-          echo "⚠️  Deploy failed — rolling back"
+          echo "Deploy failed — rolling back both deployments"
           kubectl rollout undo deployment/ecosort-backend \
             --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} || true
           kubectl rollout undo deployment/ecosort-frontend \
