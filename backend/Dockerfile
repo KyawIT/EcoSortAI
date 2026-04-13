@@ -19,7 +19,11 @@ COPY model /app/model
 
 ENV ECOSORT_MODEL_PATH=/app/model/ecosort.keras \
     ECOSORT_LABELS_PATH=/app/model/labels.json \
-    MPLCONFIGDIR=/app/.cache/matplotlib
+    MPLCONFIGDIR=/app/.cache/matplotlib \
+    # Disable AVX-512 oneDNN kernels — fixes SIGILL on CPUs without AVX-512
+    TF_ENABLE_ONEDNN_OPTS=0 \
+    # Suppress TF startup noise in logs
+    TF_CPP_MIN_LOG_LEVEL=2
 
 RUN mkdir -p /app/.cache/matplotlib
 
