@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: student-if200166
+
+resources:
+  - backend.yaml
+  - frontend.yaml
+  - ingress.yaml
+
+# Workflow patches these at deploy time via:
+#   kustomize edit set image docker.io/library/replace-backend-image:latest=ghcr.io/kyawit/ecosortai-backend:<sha>
+#   kustomize edit set image docker.io/library/replace-frontend-image:latest=ghcr.io/kyawit/ecosortai-frontend:<sha>
+images:
+  - name: docker.io/library/replace-backend-image:latest
+    newName: ghcr.io/kyawit/ecosortai-backend
+    newTag: latest
+  - name: docker.io/library/replace-frontend-image:latest
+    newName: ghcr.io/kyawit/ecosortai-frontend
+    newTag: latest

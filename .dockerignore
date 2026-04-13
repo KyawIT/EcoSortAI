@@ -1,0 +1,18 @@
+.git
+.gitignore
+.venv
+.idea
+.DS_Store
+**/__pycache__
+**/*.pyc
+
+# Not needed in container builds
+data/
+notebooks/
+assets/
+kubectl
+
+# Frontend local artifacts
+frontend/node_modules/
+frontend/.next/
+frontend/.idea/

@@ -1,0 +1,168 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# One deploy at a time — queues, doesn't cancel
+concurrency:
+  group: deploy-leocloud
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/kyawit/ecosortai-backend
+  FRONTEND_IMAGE: ghcr.io/kyawit/ecosortai-frontend
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # JOB 1 — Build & push images to GHCR
+  # ────────────────────────────────────────────────────────────────
+  build_push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Backend ────────────────────────────────────────────────
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:latest
+          cache-from: type=registry,ref=${{ env.BACKEND_IMAGE }}:latest
+          cache-to: type=inline
+
+      # ── Frontend ───────────────────────────────────────────────
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+            ${{ env.FRONTEND_IMAGE }}:latest
+          cache-from: type=registry,ref=${{ env.FRONTEND_IMAGE }}:latest
+          cache-to: type=inline
+
+  # ────────────────────────────────────────────────────────────────
+  # JOB 2 — Deploy to LeoCloud (main branch only)
+  # ────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to LeoCloud
+    needs: build_push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    environment:
+      name: production
+      url: https://if200166.cloud.htl-leonding.ac.at
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kubectl & kustomize
+        uses: azure/setup-kubectl@v4
+
+      - name: Install kustomize
+        run: |
+          curl -sSfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz \
+            | tar -xz -C /usr/local/bin
+          kustomize version
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.LEOCLOUD_KUBECONFIG_B64 }}" | base64 --decode > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Set namespace
+        run: |
+          kubectl config set-context --current \
+            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }}
+
+      - name: Inject image tags into manifests
+        working-directory: k8s/leocloud
+        run: |
+          kustomize edit set image \
+            docker.io/library/replace-backend-image:latest=${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          kustomize edit set image \
+            docker.io/library/replace-frontend-image:latest=${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+
+      - name: Apply manifests
+        run: kubectl apply -k k8s/leocloud
+
+      - name: Wait — backend rollout
+        run: |
+          kubectl rollout status deployment/ecosort-backend \
+            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
+            --timeout=300s
+
+      - name: Wait — frontend rollout
+        run: |
+          kubectl rollout status deployment/ecosort-frontend \
+            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
+            --timeout=120s
+
+      # ── Smoke tests ────────────────────────────────────────────
+      - name: Smoke test — backend /health
+        run: |
+          kubectl run smoke-backend \
+            --image=curlimages/curl:8.8.0 \
+            --restart=Never \
+            --rm \
+            --attach \
+            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
+            -- \
+            curl -sf http://ecosort-backend:8000/health
+
+      - name: Smoke test — frontend
+        run: |
+          kubectl run smoke-frontend \
+            --image=curlimages/curl:8.8.0 \
+            --restart=Never \
+            --rm \
+            --attach \
+            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} \
+            -- \
+            curl -sf http://ecosort-frontend:3000/
+
+      # ── Rollback on failure ────────────────────────────────────
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "⚠️  Deploy failed — rolling back"
+          kubectl rollout undo deployment/ecosort-backend \
+            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} || true
+          kubectl rollout undo deployment/ecosort-frontend \
+            --namespace=${{ secrets.LEOCLOUD_NAMESPACE }} || true

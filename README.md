@@ -124,7 +124,7 @@ Outputs saved to `model/`: weights, labels, metrics, confusion matrix, training 
 
 ## Kubernetes (Minikube)
 
-The backend ships with a production-ready Kubernetes manifest. Comes with readiness/liveness probes, resource limits, and a ClusterIP service.
+Backend and frontend both ship with Kubernetes manifests. Backend is exposed internally and frontend calls it via cluster DNS.
 
 ```bash
 # Point Docker at Minikube's daemon
@@ -132,17 +132,69 @@ eval "$(minikube -p minikube docker-env)"
 
 # Build image inside Minikube
 docker build -f backend/Dockerfile -t ecosort-backend:dev .
+docker build -f frontend/Dockerfile -t ecosort-frontend:dev frontend
 
 # Deploy
 kubectl apply -f k8s/backend.yaml
+kubectl apply -f k8s/frontend.yaml
 kubectl -n ecosort rollout status deploy/ecosort-backend
+kubectl -n ecosort rollout status deploy/ecosort-frontend
 
-# Forward port for local testing
+# Forward backend port for API testing
 kubectl -n ecosort port-forward svc/ecosort-backend 8000:8000
 curl http://127.0.0.1:8000/health
+
+# Forward frontend for browser testing
+kubectl -n ecosort port-forward svc/ecosort-frontend 3000:3000
+# open http://127.0.0.1:3000
 ```
 
 Resource allocation per pod: `500m–2 CPU` / `1–4 Gi` memory.
+
+---
+
+## Deploy to LeoCloud
+
+Use the dedicated manifests in `k8s/leocloud/`.
+
+### 1) Build and push images (example with GHCR)
+
+```bash
+export IMAGE_TAG=v1
+export REGISTRY_USER=<your-github-user>
+export BACKEND_IMAGE=ghcr.io/${REGISTRY_USER}/ecosort-backend:${IMAGE_TAG}
+export FRONTEND_IMAGE=ghcr.io/${REGISTRY_USER}/ecosort-frontend:${IMAGE_TAG}
+
+docker build -f backend/Dockerfile -t "${BACKEND_IMAGE}" .
+docker push "${BACKEND_IMAGE}"
+
+docker build -f frontend/Dockerfile -t "${FRONTEND_IMAGE}" frontend
+docker push "${FRONTEND_IMAGE}"
+```
+
+### 2) Set image names in LeoCloud manifests
+
+```bash
+sed -i '' "s|docker.io/library/replace-backend-image:latest|${BACKEND_IMAGE}|g" k8s/leocloud/backend.yaml
+sed -i '' "s|docker.io/library/replace-frontend-image:latest|${FRONTEND_IMAGE}|g" k8s/leocloud/frontend.yaml
+```
+
+### 3) Deploy to your LeoCloud namespace (`student-if200166`)
+
+```bash
+kubectl config use-context leocloud
+kubectl config set-context --current --namespace=student-if200166
+
+kubectl apply -k k8s/leocloud
+kubectl rollout status deploy/ecosort-backend
+kubectl rollout status deploy/ecosort-frontend
+kubectl get ingress
+```
+
+App URL:
+`https://if200166.cloud.htl-leonding.ac.at`
+
+If image pulls fail, ensure the registry is public or add an `imagePullSecret`.
 
 ---
 
