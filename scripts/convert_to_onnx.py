@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Convert ecosort.keras → ecosort.onnx via SavedModel.
+Convert ecosort.keras → ecosort.onnx.
 
-tf2onnx --keras flag doesn't support Keras 3 (set_learning_phase removed).
-Workaround: save as SavedModel first, then convert that.
+Bypasses tf.saved_model.save entirely to avoid the seed_generator/untracked-
+resource error that RandomFlip/Rotation augmentation layers cause in Keras 3.
+Uses a traced @tf.function (training=False) with tf2onnx.from_function —
+no SavedModel intermediate needed.
 
 Usage:
     pip install tf2onnx
@@ -12,14 +14,11 @@ Usage:
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 KERAS_MODEL = ROOT / "model" / "ecosort.keras"
-SAVED_MODEL = ROOT / "model" / "_ecosort_saved_model_tmp"
 ONNX_MODEL = ROOT / "model" / "ecosort.onnx"
 
 
@@ -28,37 +27,40 @@ def main() -> None:
         print(f"[ERROR] Model not found: {KERAS_MODEL}")
         sys.exit(1)
 
-    # Step 1 — load .keras and re-export as SavedModel
-    print("Step 1/2 — loading .keras and exporting as SavedModel ...")
+    print("Loading model …")
     import tensorflow as tf  # noqa: PLC0415
+    import tf2onnx  # noqa: PLC0415
 
     model = tf.keras.models.load_model(str(KERAS_MODEL))
-    if SAVED_MODEL.exists():
-        shutil.rmtree(SAVED_MODEL)
-    tf.saved_model.save(model, str(SAVED_MODEL))
-    print(f"          SavedModel written to {SAVED_MODEL}")
 
-    # Step 2 — convert SavedModel → ONNX
-    print("Step 2/2 — converting SavedModel → ONNX ...")
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "tf2onnx.convert",
-            "--saved-model", str(SAVED_MODEL),
-            "--output", str(ONNX_MODEL),
-            "--opset", "17",
-        ],
-        check=False,
+    h = model.input_shape[1] or 224
+    w = model.input_shape[2] or 224
+    print(f"Input shape: ({h}, {w}, 3)")
+
+    # Trace with training=False so augmentation layers become identity ops
+    spec = (tf.TensorSpec(shape=[None, h, w, 3], dtype=tf.float32, name="image"),)
+
+    @tf.function(input_signature=spec)
+    def inference(x):
+        return model(x, training=False)
+
+    print("Tracing inference function …")
+    # Warm-up trace to make debugging easier; conversion uses the tf.function
+    # object, not the returned ConcreteFunction.
+    inference.get_concrete_function()
+
+    print("Converting to ONNX (opset 17) …")
+    model_proto, _ = tf2onnx.convert.from_function(
+        inference,
+        input_signature=spec,
+        opset=17,
     )
 
-    # Clean up temp SavedModel regardless of outcome
-    shutil.rmtree(SAVED_MODEL, ignore_errors=True)
-
-    if result.returncode != 0:
-        print("[ERROR] ONNX conversion failed.")
-        sys.exit(1)
+    ONNX_MODEL.write_bytes(model_proto.SerializeToString())
 
     size_mb = ONNX_MODEL.stat().st_size / 1_048_576
     print(f"[OK] {ONNX_MODEL} ({size_mb:.1f} MB)")
+    print()
     print("Next steps:")
     print("  git add model/ecosort.onnx")
     print("  git commit -m 'add ONNX model'")
