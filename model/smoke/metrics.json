@@ -1,0 +1,13 @@
+{
+  "test_loss": 1.791763186454773,
+  "test_accuracy": 0.1666666716337204,
+  "num_classes": 6,
+  "classes": [
+    "battery",
+    "glass",
+    "metal",
+    "organic",
+    "paper",
+    "plastic"
+  ]
+}

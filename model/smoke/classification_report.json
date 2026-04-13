@@ -1,0 +1,51 @@
+{
+  "battery": {
+    "precision": 0.16666666666666666,
+    "recall": 1.0,
+    "f1-score": 0.2857142857142857,
+    "support": 117.0
+  },
+  "glass": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 117.0
+  },
+  "metal": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 117.0
+  },
+  "organic": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 117.0
+  },
+  "paper": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 117.0
+  },
+  "plastic": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 117.0
+  },
+  "accuracy": 0.16666666666666666,
+  "macro avg": {
+    "precision": 0.027777777777777776,
+    "recall": 0.16666666666666666,
+    "f1-score": 0.047619047619047616,
+    "support": 702.0
+  },
+  "weighted avg": {
+    "precision": 0.027777777777777776,
+    "recall": 0.16666666666666666,
+    "f1-score": 0.04761904761904761,
+    "support": 702.0
+  }
+}

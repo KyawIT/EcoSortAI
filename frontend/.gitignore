@@ -1,0 +1,32 @@
+# ── Next.js ─────────────────────────────────────────────────────────
+.next/
+out/
+build/
+.turbo/
+
+# ── Dependencies ─────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# ── Environment ─────────────────────────────────────────────────────
+.env*.local
+!.env.local.example
+
+# ── TypeScript ───────────────────────────────────────────────────────
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Deployment ───────────────────────────────────────────────────────
+.vercel/
+
+# ── Debug logs ───────────────────────────────────────────────────────
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── OS ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

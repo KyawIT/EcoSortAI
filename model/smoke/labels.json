@@ -1,0 +1,18 @@
+{
+  "index_to_label": [
+    "battery",
+    "glass",
+    "metal",
+    "organic",
+    "paper",
+    "plastic"
+  ],
+  "label_to_index": {
+    "battery": 0,
+    "glass": 1,
+    "metal": 2,
+    "organic": 3,
+    "paper": 4,
+    "plastic": 5
+  }
+}
