@@ -24,7 +24,7 @@ spec:
               name: http
           env:
             - name: ECOSORT_MODEL_PATH
-              value: /app/model/ecosort.keras
+              value: /app/model/ecosort.onnx
             - name: ECOSORT_LABELS_PATH
               value: /app/model/labels.json
             - name: ECOSORT_ALLOWED_ORIGINS

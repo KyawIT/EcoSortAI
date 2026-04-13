@@ -26,7 +26,6 @@ pip-wheel-metadata/
 *.h5
 *.hdf5
 *.pb
-*.onnx
 *.pkl
 *.joblib
 *.safetensors
