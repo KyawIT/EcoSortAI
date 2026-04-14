@@ -29,7 +29,6 @@ type SelectedImage = {
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || "EcoSort AI";
-const MAX_UPLOAD_BYTES = 3_500_000;
 const MAX_IMAGE_EDGE = 1920;
 
 function clampPercent(value: number): number {
@@ -97,6 +96,25 @@ async function optimizeImageForUpload(file: File): Promise<SelectedImage> {
   }
 }
 
+function isHeicLike(file: File): boolean {
+  const mime = file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+  return (
+    mime === "image/heic" ||
+    mime === "image/heif" ||
+    mime === "image/heic-sequence" ||
+    mime === "image/heif-sequence" ||
+    name.endsWith(".heic") ||
+    name.endsWith(".heif")
+  );
+}
+
+function isLikelyImage(file: File): boolean {
+  if (file.type.toLowerCase().startsWith("image/")) return true;
+  const name = file.name.toLowerCase();
+  return /\.(jpe?g|png|webp|heic|heif)$/.test(name);
+}
+
 export default function HomePage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -134,13 +152,14 @@ export default function HomePage() {
   const onFilePicked = useCallback(
     async (file: File | null) => {
       if (!file) return;
-      if (!file.type.startsWith("image/")) {
+      if (!isLikelyImage(file)) {
         setErrorMessage("Please upload an image file.");
         return;
       }
 
       try {
-        const shouldOptimize = !ACCEPTED_TYPES.includes(file.type) || file.size > MAX_UPLOAD_BYTES;
+        const normalizedType = file.type.toLowerCase();
+        const shouldOptimize = isHeicLike(file) || !ACCEPTED_TYPES.includes(normalizedType);
         if (shouldOptimize) {
           const optimized = await optimizeImageForUpload(file);
           setNewImage(optimized.blob, optimized.name);
@@ -148,7 +167,11 @@ export default function HomePage() {
         }
         setNewImage(file, file.name || `upload-${Date.now()}.jpg`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not process selected image.";
+        const message = isHeicLike(file)
+          ? "Could not process this HEIC image on this browser. Please try another photo or convert it to JPG."
+          : error instanceof Error
+            ? error.message
+            : "Could not process selected image.";
         setErrorMessage(message);
       }
     },
