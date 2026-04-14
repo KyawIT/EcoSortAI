@@ -29,6 +29,8 @@ type SelectedImage = {
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || "EcoSort AI";
+const MAX_UPLOAD_BYTES = 3_500_000;
+const MAX_IMAGE_EDGE = 1920;
 
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -55,14 +57,49 @@ function getBinStyle(bin: string): { color: string; bg: string } {
   return { color: "#94a3b8", bg: "rgba(148,163,184,0.1)" };
 }
 
+async function optimizeImageForUpload(file: File): Promise<SelectedImage> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Could not read the selected image."));
+      img.src = objectUrl;
+    });
+
+    const originalWidth = image.naturalWidth || image.width;
+    const originalHeight = image.naturalHeight || image.height;
+    const maxEdge = Math.max(originalWidth, originalHeight);
+    const scale = maxEdge > MAX_IMAGE_EDGE ? MAX_IMAGE_EDGE / maxEdge : 1;
+    const width = Math.max(1, Math.round(originalWidth * scale));
+    const height = Math.max(1, Math.round(originalHeight * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Canvas context unavailable.");
+    }
+    context.drawImage(image, 0, 0, width, height);
+
+    const jpegBlob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/jpeg", 0.88);
+    });
+    if (!jpegBlob) {
+      throw new Error("Could not process image.");
+    }
+
+    const baseName = (file.name || `upload-${Date.now()}`).replace(/\.[^/.]+$/, "");
+    return { blob: jpegBlob, name: `${baseName}.jpg` };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 export default function HomePage() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [isCameraOn, setIsCameraOn] = useState(false);
-  const [isVideoReady, setIsVideoReady] = useState(false);
   const [selectedImage, setSelectedImage] = useState<SelectedImage | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [prediction, setPrediction] = useState<PredictionResponse | null>(null);
@@ -82,18 +119,6 @@ export default function HomePage() {
     }
   }, []);
 
-  const cleanupStream = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setIsVideoReady(false);
-    setIsCameraOn(false);
-  }, []);
-
   const setNewImage = useCallback(
     (blob: Blob, name: string, previewOverride?: string) => {
       clearResultState();
@@ -107,135 +132,32 @@ export default function HomePage() {
   );
 
   const onFilePicked = useCallback(
-    (file: File | null) => {
+    async (file: File | null) => {
       if (!file) return;
-      if (!ACCEPTED_TYPES.includes(file.type)) {
-        setErrorMessage("Please upload a JPG, PNG, or WEBP image.");
+      if (!file.type.startsWith("image/")) {
+        setErrorMessage("Please upload an image file.");
         return;
       }
-      setNewImage(file, file.name || `upload-${Date.now()}.jpg`);
+
+      try {
+        const shouldOptimize = !ACCEPTED_TYPES.includes(file.type) || file.size > MAX_UPLOAD_BYTES;
+        if (shouldOptimize) {
+          const optimized = await optimizeImageForUpload(file);
+          setNewImage(optimized.blob, optimized.name);
+          return;
+        }
+        setNewImage(file, file.name || `upload-${Date.now()}.jpg`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not process selected image.";
+        setErrorMessage(message);
+      }
     },
     [setNewImage]
   );
 
-  const startCamera = useCallback(async () => {
-    clearResultState();
-    setIsVideoReady(false);
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setErrorMessage("This browser does not support camera access.");
-      return;
-    }
-    try {
-      cleanupStream();
-      const candidates: MediaStreamConstraints[] = [
-        { video: { facingMode: { exact: "environment" } }, audio: false },
-        { video: { facingMode: { ideal: "environment" } }, audio: false },
-        { video: true, audio: false },
-      ];
-      let mediaStream: MediaStream | null = null;
-      let lastError: unknown = null;
-      for (const constraints of candidates) {
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-          break;
-        } catch (err) {
-          lastError = err;
-        }
-      }
-      if (!mediaStream) {
-        throw lastError || new Error("Unable to access camera.");
-      }
-      streamRef.current = mediaStream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        videoRef.current.muted = true;
-        videoRef.current.setAttribute("playsinline", "true");
-        videoRef.current.setAttribute("webkit-playsinline", "true");
-        const playPromise = videoRef.current.play();
-        if (playPromise && typeof playPromise.catch === "function") {
-          await playPromise.catch(() => undefined);
-        }
-      }
-      setIsCameraOn(true);
-    } catch (error) {
-      let message = "Camera could not be started.";
-      if (error instanceof Error) {
-        if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError") {
-          message = "No camera found on this device.";
-        } else if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
-          message = "Camera access denied. Please allow camera permissions in your browser settings.";
-        } else if (error.name === "NotReadableError" || error.name === "TrackStartError") {
-          message = "Camera is already in use by another application.";
-        } else if (error.name === "OverconstrainedError") {
-          message = "Camera does not meet the required constraints.";
-        } else if (error.name === "SecurityError") {
-          message = "Camera access requires a secure (HTTPS) connection.";
-        } else {
-          message = error.message;
-        }
-      }
-      setErrorMessage(message);
-    }
-  }, [cleanupStream, clearResultState]);
-
-  const stopCamera = useCallback(() => {
-    cleanupStream();
-  }, [cleanupStream]);
-
-  const waitForVideoFrame = useCallback(async (video: HTMLVideoElement, timeoutMs = 3000): Promise<boolean> => {
-    const startedAt = Date.now();
-    if (video.paused) {
-      try {
-        await video.play();
-      } catch {
-        // iOS Safari can reject autoplay until stream stabilizes; polling continues.
-      }
-    }
-    while (Date.now() - startedAt < timeoutMs) {
-      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-        return true;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 120));
-    }
-    return false;
-  }, []);
-
-  const takeSnapshot = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current) {
-      setErrorMessage("Camera not ready.");
-      return;
-    }
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ready = (video.videoWidth > 0 && video.videoHeight > 0) || (await waitForVideoFrame(video, 7000));
-    if (!ready || !video.videoWidth || !video.videoHeight) {
-      setErrorMessage("Video feed is still warming up. Please wait a moment and try again.");
-      return;
-    }
-    setIsVideoReady(true);
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      setErrorMessage("Canvas context unavailable.");
-      return;
-    }
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-    const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob(resolve, "image/jpeg", 0.92);
-    });
-    if (!blob) {
-      setErrorMessage("Could not capture snapshot.");
-      return;
-    }
-    setNewImage(blob, `snapshot-${Date.now()}.jpg`, dataUrl);
-    cleanupStream();
-  }, [cleanupStream, setNewImage, waitForVideoFrame]);
-
   const analyzeImage = useCallback(async () => {
     if (!selectedImage) {
-      setErrorMessage("Please select or capture an image first.");
+      setErrorMessage("Please upload an image first.");
       return;
     }
     clearResultState();
@@ -246,12 +168,37 @@ export default function HomePage() {
       const response = await fetch("/api/predict", {
         method: "POST",
         body: form,
+        headers: {
+          Accept: "application/json",
+        },
       });
-      const payload = (await response.json()) as PredictionResponse | ErrorResponse;
+      const contentType = response.headers.get("content-type") || "";
+      const rawBody = await response.text();
+      let payload: PredictionResponse | ErrorResponse | null = null;
+      if (rawBody) {
+        if (contentType.includes("application/json")) {
+          try {
+            payload = JSON.parse(rawBody) as PredictionResponse | ErrorResponse;
+          } catch {
+            payload = { error: "Invalid JSON response from server." };
+          }
+        } else {
+          try {
+            payload = JSON.parse(rawBody) as PredictionResponse | ErrorResponse;
+          } catch {
+            payload = { error: rawBody.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim() || "Unexpected non-JSON response from server." };
+          }
+        }
+      }
       if (!response.ok) {
-        const err = payload as ErrorResponse;
-        const msg = err.details ? `${err.error || "Error"}: ${err.details}` : err.error;
-        setErrorMessage(msg || "Prediction failed.");
+        const err = payload as ErrorResponse | null;
+        const fallback = `Prediction failed (${response.status}).`;
+        const msg = err?.details ? `${err.error || "Error"}: ${err.details}` : err?.error;
+        setErrorMessage(msg || fallback);
+        return;
+      }
+      if (!payload || typeof (payload as PredictionResponse).predicted_class !== "string") {
+        setErrorMessage("Server returned an unexpected response format.");
         return;
       }
       setPrediction(payload as PredictionResponse);
@@ -264,7 +211,6 @@ export default function HomePage() {
   }, [clearResultState, selectedImage]);
 
   const resetAll = useCallback(() => {
-    cleanupStream();
     setSelectedImage(null);
     setPrediction(null);
     setErrorMessage(null);
@@ -273,26 +219,13 @@ export default function HomePage() {
       return null;
     });
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [cleanupStream, revokePreviewUrl]);
-
-  useEffect(() => {
-    if (!isCameraOn || isVideoReady) return;
-    const timer = window.setInterval(() => {
-      const video = videoRef.current;
-      if (!video) return;
-      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-        setIsVideoReady(true);
-      }
-    }, 200);
-    return () => window.clearInterval(timer);
-  }, [isCameraOn, isVideoReady]);
+  }, [revokePreviewUrl]);
 
   useEffect(() => {
     return () => {
-      cleanupStream();
       revokePreviewUrl(previewUrl);
     };
-  }, [cleanupStream, previewUrl, revokePreviewUrl]);
+  }, [previewUrl, revokePreviewUrl]);
 
   const topPredictions = useMemo(() => prediction?.top_predictions ?? [], [prediction]);
 
@@ -312,13 +245,13 @@ export default function HomePage() {
           <span className="hero-leaf">🌿</span> {APP_NAME}
         </h1>
         <p className="subtitle">
-          Snap a photo or upload an image — our AI identifies the waste type and
+          Upload an image from your gallery — our AI identifies the waste type and
           tells you exactly which bin to use. Sort smarter, live greener.
         </p>
         <div className="hero-stats">
           <div className="stat-chip">⚡ Real-time AI</div>
           <div className="stat-chip">♻️ 10+ Categories</div>
-          <div className="stat-chip">📱 Camera Ready</div>
+          <div className="stat-chip">📱 Mobile Upload</div>
           <div className="stat-chip">🌍 Go Green</div>
         </div>
       </header>
@@ -331,24 +264,13 @@ export default function HomePage() {
           <div className="card-header">
             <span className="card-icon">📷</span>
             <div>
-              <h2>Capture Image</h2>
-              <p className="muted">Live camera or file upload</p>
+              <h2>Upload Image</h2>
+              <p className="muted">Choose a photo from your device gallery</p>
             </div>
           </div>
 
-          <div className={`camera-stage${isCameraOn ? " is-active" : ""}`}>
-            {isCameraOn ? (
-              <video
-                ref={videoRef}
-                className="camera-feed"
-                playsInline
-                muted
-                autoPlay
-                onLoadedMetadata={() => setIsVideoReady(true)}
-                onCanPlay={() => setIsVideoReady(true)}
-                onPlaying={() => setIsVideoReady(true)}
-              />
-            ) : previewUrl ? (
+          <div className="camera-stage">
+            {previewUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={previewUrl} alt="Selected item" className="camera-feed" />
             ) : (
@@ -360,42 +282,19 @@ export default function HomePage() {
                   </svg>
                 </div>
                 <p>No image selected</p>
-                <span className="placeholder-hint">Use camera or upload below</span>
+                <span className="placeholder-hint">Upload from gallery below</span>
               </div>
-            )}
-            <canvas ref={canvasRef} className="hidden-canvas" />
-          </div>
-
-          <div className="button-row">
-            {!isCameraOn ? (
-              <button type="button" className="btn btn-cam" onClick={startCamera}>
-                📸 Start Camera
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="btn btn-cam"
-                  onClick={takeSnapshot}
-                  disabled={!isVideoReady}
-                >
-                  {isVideoReady ? "📷 Take Snapshot" : "📷 Take Snapshot (warming up)"}
-                </button>
-                <button type="button" className="btn btn-ghost" onClick={stopCamera}>
-                  ✕ Stop Camera
-                </button>
-              </>
             )}
           </div>
 
           <label className="upload-zone">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/jpg,image/webp"
-              onChange={(event) => onFilePicked(event.target.files?.[0] || null)}
-              className="upload-input"
-            />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={(event) => onFilePicked(event.target.files?.[0] || null)}
+                className="upload-input"
+              />
             <span className="upload-label">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -404,7 +303,7 @@ export default function HomePage() {
               </svg>
               Upload Image
             </span>
-            <span className="upload-hint">JPG · PNG · WEBP</span>
+            <span className="upload-hint">JPG · PNG · WEBP · HEIC (auto-optimized)</span>
           </label>
 
           <div className="button-row">
@@ -512,7 +411,7 @@ export default function HomePage() {
               <div className="empty-icon">♻️</div>
               <p className="empty-title">No analysis yet</p>
               <p className="muted">
-                Upload an image or take a snapshot,
+                Upload an image from your gallery,
                 <br />
                 then hit Analyze Image.
               </p>
