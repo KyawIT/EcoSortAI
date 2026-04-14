@@ -184,6 +184,13 @@ export default function HomePage() {
 
   const waitForVideoFrame = useCallback(async (video: HTMLVideoElement, timeoutMs = 3000): Promise<boolean> => {
     const startedAt = Date.now();
+    if (video.paused) {
+      try {
+        await video.play();
+      } catch {
+        // iOS Safari can reject autoplay until stream stabilizes; polling continues.
+      }
+    }
     while (Date.now() - startedAt < timeoutMs) {
       if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
         return true;
@@ -200,9 +207,9 @@ export default function HomePage() {
     }
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const ready = (video.videoWidth > 0 && video.videoHeight > 0) || (await waitForVideoFrame(video));
+    const ready = (video.videoWidth > 0 && video.videoHeight > 0) || (await waitForVideoFrame(video, 7000));
     if (!ready || !video.videoWidth || !video.videoHeight) {
-      setErrorMessage("Video feed not ready yet. Please try again.");
+      setErrorMessage("Video feed is still warming up. Please wait a moment and try again.");
       return;
     }
     setIsVideoReady(true);
@@ -236,11 +243,7 @@ export default function HomePage() {
     try {
       const form = new FormData();
       form.append("file", selectedImage.blob, selectedImage.name);
-      const apiUrl =
-        typeof window !== "undefined"
-          ? new URL("/api/predict", window.location.origin).toString()
-          : "/api/predict";
-      const response = await fetch(apiUrl, {
+      const response = await fetch("/api/predict", {
         method: "POST",
         body: form,
       });
@@ -343,6 +346,7 @@ export default function HomePage() {
                 autoPlay
                 onLoadedMetadata={() => setIsVideoReady(true)}
                 onCanPlay={() => setIsVideoReady(true)}
+                onPlaying={() => setIsVideoReady(true)}
               />
             ) : previewUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -373,6 +377,7 @@ export default function HomePage() {
                   type="button"
                   className="btn btn-cam"
                   onClick={takeSnapshot}
+                  disabled={!isVideoReady}
                 >
                   {isVideoReady ? "📷 Take Snapshot" : "📷 Take Snapshot (warming up)"}
                 </button>
