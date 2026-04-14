@@ -23,7 +23,7 @@ const nextConfig: NextConfig = {
           {
             key: "Permissions-Policy",
             // camera is required for the live camera feature
-            value: "camera=self, microphone=(), geolocation=()",
+            value: "camera=(self), microphone=(), geolocation=()",
           },
         ],
       },

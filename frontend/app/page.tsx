@@ -22,7 +22,12 @@ type ErrorResponse = {
   details?: string;
 };
 
-const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
+type SelectedImage = {
+  blob: Blob;
+  name: string;
+};
+
+const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || "EcoSort AI";
 
 function clampPercent(value: number): number {
@@ -58,13 +63,13 @@ export default function HomePage() {
 
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedImage, setSelectedImage] = useState<SelectedImage | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [prediction, setPrediction] = useState<PredictionResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const hasImage = Boolean(selectedFile && previewUrl);
+  const hasImage = Boolean(selectedImage && previewUrl);
 
   const clearResultState = useCallback(() => {
     setPrediction(null);
@@ -89,13 +94,13 @@ export default function HomePage() {
     setIsCameraOn(false);
   }, []);
 
-  const setNewFile = useCallback(
-    (file: File, previewOverride?: string) => {
+  const setNewImage = useCallback(
+    (blob: Blob, name: string, previewOverride?: string) => {
       clearResultState();
-      setSelectedFile(file);
+      setSelectedImage({ blob, name });
       setPreviewUrl((currentUrl) => {
         revokePreviewUrl(currentUrl);
-        return previewOverride ?? URL.createObjectURL(file);
+        return previewOverride ?? URL.createObjectURL(blob);
       });
     },
     [clearResultState, revokePreviewUrl]
@@ -108,23 +113,48 @@ export default function HomePage() {
         setErrorMessage("Please upload a JPG, PNG, or WEBP image.");
         return;
       }
-      setNewFile(file);
+      setNewImage(file, file.name || `upload-${Date.now()}.jpg`);
     },
-    [setNewFile]
+    [setNewImage]
   );
 
   const startCamera = useCallback(async () => {
     clearResultState();
     setIsVideoReady(false);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrorMessage("This browser does not support camera access.");
+      return;
+    }
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } },
-        audio: false,
-      });
+      cleanupStream();
+      const candidates: MediaStreamConstraints[] = [
+        { video: { facingMode: { exact: "environment" } }, audio: false },
+        { video: { facingMode: { ideal: "environment" } }, audio: false },
+        { video: true, audio: false },
+      ];
+      let mediaStream: MediaStream | null = null;
+      let lastError: unknown = null;
+      for (const constraints of candidates) {
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      if (!mediaStream) {
+        throw lastError || new Error("Unable to access camera.");
+      }
       streamRef.current = mediaStream;
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        await videoRef.current.play();
+        videoRef.current.muted = true;
+        videoRef.current.setAttribute("playsinline", "true");
+        videoRef.current.setAttribute("webkit-playsinline", "true");
+        const playPromise = videoRef.current.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+          await playPromise.catch(() => undefined);
+        }
       }
       setIsCameraOn(true);
     } catch (error) {
@@ -146,27 +176,36 @@ export default function HomePage() {
       }
       setErrorMessage(message);
     }
-  }, [clearResultState]);
+  }, [cleanupStream, clearResultState]);
 
   const stopCamera = useCallback(() => {
     cleanupStream();
   }, [cleanupStream]);
+
+  const waitForVideoFrame = useCallback(async (video: HTMLVideoElement, timeoutMs = 3000): Promise<boolean> => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+    return false;
+  }, []);
 
   const takeSnapshot = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) {
       setErrorMessage("Camera not ready.");
       return;
     }
-    if (!isVideoReady) {
-      setErrorMessage("Camera is warming up. Try again in a moment.");
-      return;
-    }
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video.videoWidth || !video.videoHeight) {
-      setErrorMessage("Video feed not ready yet. Please wait a moment.");
+    const ready = (video.videoWidth > 0 && video.videoHeight > 0) || (await waitForVideoFrame(video));
+    if (!ready || !video.videoWidth || !video.videoHeight) {
+      setErrorMessage("Video feed not ready yet. Please try again.");
       return;
     }
+    setIsVideoReady(true);
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const context = canvas.getContext("2d");
@@ -183,16 +222,12 @@ export default function HomePage() {
       setErrorMessage("Could not capture snapshot.");
       return;
     }
-    const file = new File([blob], `snapshot-${Date.now()}.jpg`, {
-      type: "image/jpeg",
-      lastModified: Date.now(),
-    });
-    setNewFile(file, dataUrl);
+    setNewImage(blob, `snapshot-${Date.now()}.jpg`, dataUrl);
     cleanupStream();
-  }, [cleanupStream, isVideoReady, setNewFile]);
+  }, [cleanupStream, setNewImage, waitForVideoFrame]);
 
   const analyzeImage = useCallback(async () => {
-    if (!selectedFile) {
+    if (!selectedImage) {
       setErrorMessage("Please select or capture an image first.");
       return;
     }
@@ -200,8 +235,12 @@ export default function HomePage() {
     setIsLoading(true);
     try {
       const form = new FormData();
-      form.append("file", selectedFile, selectedFile.name);
-      const response = await fetch("/api/predict", {
+      form.append("file", selectedImage.blob, selectedImage.name);
+      const apiUrl =
+        typeof window !== "undefined"
+          ? new URL("/api/predict", window.location.origin).toString()
+          : "/api/predict";
+      const response = await fetch(apiUrl, {
         method: "POST",
         body: form,
       });
@@ -219,11 +258,11 @@ export default function HomePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [clearResultState, selectedFile]);
+  }, [clearResultState, selectedImage]);
 
   const resetAll = useCallback(() => {
     cleanupStream();
-    setSelectedFile(null);
+    setSelectedImage(null);
     setPrediction(null);
     setErrorMessage(null);
     setPreviewUrl((currentUrl) => {
@@ -232,6 +271,18 @@ export default function HomePage() {
     });
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [cleanupStream, revokePreviewUrl]);
+
+  useEffect(() => {
+    if (!isCameraOn || isVideoReady) return;
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+        setIsVideoReady(true);
+      }
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [isCameraOn, isVideoReady]);
 
   useEffect(() => {
     return () => {
@@ -322,9 +373,8 @@ export default function HomePage() {
                   type="button"
                   className="btn btn-cam"
                   onClick={takeSnapshot}
-                  disabled={!isVideoReady}
                 >
-                  {isVideoReady ? "📷 Take Snapshot" : "⏳ Camera Warming Up"}
+                  {isVideoReady ? "📷 Take Snapshot" : "📷 Take Snapshot (warming up)"}
                 </button>
                 <button type="button" className="btn btn-ghost" onClick={stopCamera}>
                   ✕ Stop Camera
@@ -337,7 +387,7 @@ export default function HomePage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              accept="image/png,image/jpeg,image/jpg,image/webp"
               onChange={(event) => onFilePicked(event.target.files?.[0] || null)}
               className="upload-input"
             />
